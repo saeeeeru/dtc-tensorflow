@@ -1,0 +1,8 @@
+ConfigArgParse==0.13.0
+matplotlib==2.2.3
+numpy==1.14.5
+scikit-learn==0.19.2
+scipy==1.1.0
+sklearn==0.0
+tensorboard==1.10.0
+tensorflow==1.10.0
