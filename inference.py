@@ -1,59 +1,101 @@
-import os, csv
+import os, sys, shutil
 
-import configargparse
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
+from progressbar import ProgressBar
+
 from dataset import Dataset
 from dtc.model import DeepTemporalClustering
+from func import generate_args, BHTSNE
 
-PLT = False
+class InferenceLearnedModel():
+	"""docstring for InferenceLearnedModel"""
+	def __init__(self, args):
+		self.__dict__ = args.copy()
 
-def show_results(dataset, train_seq, train_label, decoded_seq, cluster_list):
-	for i in range(len(train_seq)):
-		print('label: {}, cluster: {}'.format(train_label[i], cluster_list[i]))
+		self.data = Dataset(self.dataset)
 
-		if PLT:
-			fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10,15))
-			fig.suptitle('upper: original sequence, lower: decoded sequence')
-			ax[0].plot(train_seq[i])
-			ax[1].plot(decoded_seq[i])
-			plt.show()
+		model = DeepTemporalClustering(params={
+				'n_clusters': 4,
+				'L': self.data.L,
+				'K': self.data.K,
+				# 'n_filters_CNN': 50,
+				'n_filters_CNN': 100,
+				'kernel_size': 10,
+				'P': 10,
+				# 'n_filters_RNN_list': [50, 1],
+				'n_filters_RNN_list': [50, 50],
+				'alpha': 1.0
+				})
+
+		ae_ckpt_path = os.path.join('ae_ckpt','model.ckpt')
+
+		saver = tf.train.Saver(var_list=tf.trainable_variables())
+		with tf.Session() as sess:
+			saver.restore(sess, ae_ckpt_path)
+			init_decoded_list = sess.run(model.auto_encoder.decoder, \
+							feed_dict={model.auto_encoder.input_: self.data.seq_list, model.auto_encoder.input_batch_size:len(self.data.seq_list)})
+
+		dc_ckpt_path = os.path.join('dtc_ckpt','model.ckpt')
+		with tf.Session() as sess:
+			sess.run(tf.global_variables_initializer())
+			saver.restore(sess, dc_ckpt_path)
+			decoded_list, self.cluster_list, self.z_list = sess.run([model.auto_encoder.decoder, model.pred, model.z], \
+							feed_dict={model.auto_encoder.input_: self.data.seq_list, model.auto_encoder.input_batch_size:len(self.data.seq_list)})
+
+		self.decoded_list_list = [init_decoded_list, decoded_list]
+
+
+	def plot_decoded_sequences(self, stop_idx=None):
+
+		savedir = os.path.join('.','_fig')
+		if os.path.exists(savedir):
+			shutil.rmtree(savedir)
+		os.mkdir(savedir)
+
+		print('writing ...')
+		N = len(self.data.seq_list) if stop_idx == None else stop_idx
+		p = ProgressBar(maxval=N).start()
+		for idx in range(N):
+			_dir = 'dat{}'.format(idx)
+			os.mkdir(os.path.join(savedir,_dir))
+
+			fig, ax = plt.subplots(nrows=1+len(self.decoded_list_list), ncols=1, figsize=(20,15))
+			fig.suptitle('[{}] upper: original sequence, lower: decoded sequence'.format(_dir), fontsize=10)
+			plt.subplots_adjust(hspace=0.2)
+
+			X = self.data.seq_list[idx]
+			ax[0].plot(X)
+			for i, decoded_list in enumerate(self.decoded_list_list):
+				decoded = decoded_list[idx]
+				ax[i+1].plot(decoded)
+			plt.savefig(os.path.join(savedir,_dir,'result.png'))
 			plt.close()
 
-def inference(args):
-	data = Dataset(args['dataset'])
+			# print(_dir, seg_list, cluster_list[idx*4:(idx+1)*4])
+			with open(os.path.join(savedir,_dir,'cluster.txt'), 'w') as fo:
+				fo.write('{}'.format(self.cluster_list[idx]))
 
-	model = DeepTemporalClustering(params={
-			'n_clusters': args['n_clusters'],
-			'L': data.L,
-			'K': data.K,
-			'n_filters_CNN': 50,
-			'kernel_size': 10,
-			'P': 10,
-			'n_filters_RNN_list': [50, 1],
-			'alpha': 1.0
-			})
+			if idx == N-1:
+				break
 
-	dec_ckpt_path = os.path.join('dtc_ckpt','model.ckpt')
-	# dec_ckpt_path = os.path.join('ae_ckpt','model.ckpt')
-	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=None)
-	with tf.Session() as sess:
-		saver.restore(sess, dec_ckpt_path)
-		X_list, z_list, cluster_list = sess.run([model.auto_encoder.decoder, model.auto_encoder.encoder, model.pred], 
-					feed_dict={model.auto_encoder.input_:data.train_seq,
-							model.auto_encoder.input_batch_size:len(data.train_seq)})
-
-	show_results(args['dataset'], data.train_seq, data.train_label, X_list, cluster_list)
+			p.update(idx+1)
+		p.finish()
 
 def main():
-	parser = configargparse.ArgParser()
-	parser.add('-d', '--dataset' ,dest='dataset', type=str, default='synthetic', help='Name of Dataset')
-	parser.add('-k', '--n_clusters', dest='n_clusters', type=int, default=4 ,help='Number of Clusters')
-	args = vars(parser.parse_args())
+	args = generate_args()
 
-	inference(args)
+	ilm = InferenceLearnedModel(args)
+	ilm.plot_decoded_sequences(stop_idx=1)
+
+	params = {'dimensions':2,
+			'perplexity':30.0,
+			'theta':0.5,
+			'rand_seed':-1}
+	bhtsne = BHTSNE(params)
+	bhtsne.fit_and_plot(ilm.z_list.reshape((len(ilm.z_list),-1)), ilm.data.label_list, ilm.cluster_list)
 
 if __name__ == '__main__':
 	main()

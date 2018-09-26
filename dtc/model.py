@@ -42,15 +42,25 @@ class AutoEncoder(object):
 		used = tf.sign(tf.reduce_max(tf.abs(self.input_), reduction_indices=2))
 		self.length = tf.cast(tf.reduce_sum(used, reduction_indices=1), tf.int32)
 
-		conv_out = layers.convolution1d(inputs=self.input_,
-									num_outputs=self.n_filters_CNN,
-									kernel_size=self.kernel_size,
-									activation_fn=tf.nn.leaky_relu)
-		print_shape('conv out', conv_out)
-		max_pooled = tf.layers.max_pooling1d(inputs=conv_out,
-									pool_size=self.kernel_size,
-									strides=self.P)
-		print_shape('max pooled', max_pooled)
+		if self.K == 1:
+			conv_out = layers.convolution1d(inputs=self.input_,
+										num_outputs=self.n_filters_CNN,
+										kernel_size=self.kernel_size,
+										activation_fn=tf.nn.leaky_relu)
+			print_shape('conv out', conv_out)
+			max_pooled = tf.layers.max_pooling1d(inputs=conv_out,
+										pool_size=self.kernel_size,
+										strides=self.P)
+			print_shape('max pooled', max_pooled)
+		else:
+			W_conv_enc = tf.get_variable('W_conv_enc', shape=[self.kernel_size, self.K, 1, self.n_filters_CNN])
+			conv_out = tf.nn.conv2d(input=tf.expand_dims(self.input_, axis=3),
+								filter=W_conv_enc,
+								strides=[1, self.P, self.P, 1],
+								padding='SAME')
+			print_shape('conv out', conv_out)
+			max_pooled = tf.reshape(conv_out, shape=[self.input_batch_size,conv_out.shape[1],conv_out.shape[3]])
+			print_shape('max pooled', max_pooled)
 
 		cell_fw_list = [rnn.LSTMCell(n_filters_RNN) for n_filters_RNN in self.n_filters_RNN_list]
 		cell_bw_list = [rnn.LSTMCell(n_filters_RNN) for n_filters_RNN in self.n_filters_RNN_list]
@@ -64,18 +74,30 @@ class AutoEncoder(object):
 		return encoder
 
 	def _decoder_network(self):
-		encoder_tmp = tf.expand_dims(self.encoder, axis=3)
-		
-		upsampled_tmp = tf.image.resize_images(encoder_tmp, 
-						size=[self.encoder.shape[1]*self.P,1])
-						# method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-		upsampled = tf.reshape(upsampled_tmp, shape=[-1,upsampled_tmp.shape[1],upsampled_tmp.shape[2]])
-		print_shape('upsampled', upsampled)
+		if self.K == 1:
+			encoder_tmp = tf.expand_dims(self.encoder, axis=3)
+			
+			upsampled_tmp = tf.image.resize_images(encoder_tmp, 
+							size=[self.encoder.shape[1]*self.P,1])
+							# method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+			upsampled = tf.reshape(upsampled_tmp, shape=[-1,upsampled_tmp.shape[1],upsampled_tmp.shape[2]])
+			print_shape('upsampled', upsampled)
 
-		decoder = layers.convolution1d(inputs=upsampled,
-									num_outputs=self.K,
-									kernel_size=self.kernel_size,
-									activation_fn=None)
+			decoder = layers.convolution1d(inputs=upsampled,
+										num_outputs=self.K,
+										kernel_size=self.kernel_size,
+										activation_fn=None)
+		else:
+			encoder_tmp = tf.expand_dims(self.encoder, axis=2)
+			print_shape('encoder tmp', encoder_tmp)
+			W_conv_dec = tf.get_variable('W_conv_dec', shape=[self.kernel_size, self.K, 1, encoder_tmp.shape[3]])
+			decoder_tmp = tf.nn.conv2d_transpose(value=encoder_tmp,
+							filter=W_conv_dec,
+							output_shape=[self.input_batch_size, self.L, self.K, 1],
+							strides=[1, self.P, self.P, 1],
+							padding='SAME')
+			decoder = tf.reshape(decoder_tmp, shape=[self.input_batch_size, self.L, self.K])
+
 		print_shape('decoder', decoder)
 
 		return decoder
@@ -102,7 +124,9 @@ class DeepTemporalClustering(object):
 			self.pred = tf.argmax(self.q, axis=1)
 
 		with tf.name_scope('dtc-train'):
-			self.loss = self._kl_divergence(self.p, self.q)
+			# self.loss = self._kl_divergence(self.p, self.q)
+			self.loss_kl = self._kl_divergence(self.p, self.q) 
+			self.loss = self.loss_kl + 0.01 * self.auto_encoder.loss
 			self.optimizer = tf.train.AdamOptimizer(0.001).minimize(self.loss)
 
 	def _soft_assignment(self, embeddings, cluster_centers):

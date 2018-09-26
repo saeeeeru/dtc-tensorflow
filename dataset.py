@@ -26,7 +26,7 @@ def prepare_dataset(K):
 class Dataset(object):
 	"""docstring for Dataset"""
 	def __init__(self, dataset):
-		self.K = 1
+		self.K = 3
 		if dataset == 'synthetic':
 			seq_list, label_list = prepare_dataset(self.K)
 		else: 
