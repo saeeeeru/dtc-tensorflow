@@ -78,7 +78,7 @@ class AutoEncoder(object):
 			encoder_tmp = tf.expand_dims(self.encoder, axis=3)
 			
 			upsampled_tmp = tf.image.resize_images(encoder_tmp, 
-							size=[self.encoder.shape[1]*self.P,1])
+							size=[self.L + self.kernel_size - 1,1])
 							# method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 			upsampled = tf.reshape(upsampled_tmp, shape=[-1,upsampled_tmp.shape[1],upsampled_tmp.shape[2]])
 			print_shape('upsampled', upsampled)
