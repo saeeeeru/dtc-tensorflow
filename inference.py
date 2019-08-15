@@ -62,7 +62,7 @@ class InferenceLearnedModel():
 			_dir = 'dat{}'.format(idx)
 			os.mkdir(os.path.join(savedir,_dir))
 
-			fig, ax = plt.subplots(nrows=1+len(self.decoded_list_list), ncols=1, figsize=(20,15))
+			fig, ax = plt.subplots(nrows=1+len(self.decoded_list_list), ncols=1, figsize=(20,15), sharex=True, sharey=True)
 			fig.suptitle('[{}] upper: original sequence, lower: decoded sequence'.format(_dir), fontsize=10)
 			plt.subplots_adjust(hspace=0.2)
 
@@ -88,12 +88,13 @@ def main():
 	args = generate_args()
 
 	ilm = InferenceLearnedModel(args)
-	ilm.plot_decoded_sequences(stop_idx=1)
+	ilm.plot_decoded_sequences(stop_idx=10)
 
 	params = {'dimensions':2,
 			'perplexity':30.0,
 			'theta':0.5,
 			'rand_seed':-1}
+
 	bhtsne = BHTSNE(params)
 	bhtsne.fit_and_plot(ilm.z_list.reshape((len(ilm.z_list),-1)), ilm.data.label_list, ilm.cluster_list)
 

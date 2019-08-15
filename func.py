@@ -39,14 +39,13 @@ class BHTSNE(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
 
 		# split each label
 		data_dict = {str(label): np.array([data_tsne[idx] for idx, cluster in enumerate(cluster_list) if cluster == label]) for label in range(len(np.unique(label_list)))}
-		print([len(data) for label, data in data_dict.items()])
 
 		plt.figure(figsize=(15,10))
 		for m, data in data_dict.items():
 			if data is not []:
-				plt.scatter(data[:][0],data[:][1],cmap=cmap(int(m)),label='label.{}'.format(m))
+				plt.scatter(data[:][0],data[:][1],cmap=cmap(int(m)),label=f'label.{m}: {len(data)}', alpha=0.5)
 		plt.legend()
-		plt.axis([xmin,xmax,ymin,ymax])
+		# plt.axis([xmin,xmax,ymin,ymax])
 		plt.xlabel('component 0')
 		plt.ylabel('component 1')
 		plt.title('t-SNE visualization')
