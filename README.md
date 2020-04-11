@@ -1,5 +1,5 @@
 # dtc-tensorlow
-This repository for [「Deep Temporal Clustering: Fully Unsupervised Learning of Time-Domain Features」](https://arxiv.org/abs/1802.01059).  
+This repository is not official source code of [「Deep Temporal Clustering: Fully Unsupervised Learning of Time-Domain Features」](https://arxiv.org/abs/1802.01059).  
 We use synthetic dataset (a superposition of sinusoids).  
 please let me know if you have any questions to email: saeeeeru29@gmail.com
 
