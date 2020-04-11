@@ -59,9 +59,10 @@ def train(args, \
 	# Phase 2: parameter optimization
 	dec_ckpt_path = os.path.join('dtc_ckpt','model.ckpt')
 	print('Parameter(DTC) optimization')
+	saver = tf.train.Saver(var_list=tf.trainable_variables())
 	with tf.Session() as sess:
 		sess.run(tf.global_variables_initializer())
-		# save.restore(sess, ae_ckpt_path)
+		saver.restore(sess, ae_ckpt_path)
 
 		# init mu
 		z = sess.run(model.z, feed_dict={model.auto_encoder.input_: data.train_seq, model.auto_encoder.input_batch_size: len(data.train_seq)})
@@ -105,7 +106,7 @@ def main():
 	args = generate_args()
 
 	train(args)
-	# train(args, ps.path.join('ar_ckpt','model.ckpt'))
+	# train(args, ps.path.join('ae_ckpt','model.ckpt'))
 
 if __name__ == '__main__':
 	main()

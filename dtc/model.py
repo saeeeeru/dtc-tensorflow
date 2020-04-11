@@ -78,7 +78,7 @@ class AutoEncoder(object):
 			encoder_tmp = tf.expand_dims(self.encoder, axis=3)
 			
 			upsampled_tmp = tf.image.resize_images(encoder_tmp, 
-							size=[self.encoder.shape[1]*self.P,1])
+							size=[self.L + self.kernel_size - 1,1])
 							# method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 			upsampled = tf.reshape(upsampled_tmp, shape=[-1,upsampled_tmp.shape[1],upsampled_tmp.shape[2]])
 			print_shape('upsampled', upsampled)
@@ -140,21 +140,7 @@ class DeepTemporalClustering(object):
 			- q_ij: (N, n_clusters)
 		"""
 		def _pairwise_euclidean_distance(a, b):
-			a = tf.reshape(a, shape=[-1, a.shape[1]*a.shape[2]])
-			p1 = tf.matmul(
-						tf.expand_dims(tf.reduce_sum(tf.square(a), axis=1), axis=1),
-						tf.ones(shape=(1, self.n_clusters))
-					)
-			print_shape('p1', p1)
-			b = tf.reshape(b, shape=[-1, b.shape[1]*b.shape[2]])
-			p2 = tf.transpose(tf.matmul(
-							tf.reshape(tf.reduce_sum(tf.square(b), axis=1), shape=[-1, 1]),
-							tf.ones(shape=(self.auto_encoder.input_batch_size, 1)),
-							transpose_b=True)
-					)
-			print_shape('p2',p2)
-			res = tf.sqrt(tf.add(p1, p2) - 2 * tf.matmul(a, b, transpose_b=True))
-			return res
+			return tf.norm(tf.expand_dims(a, axis=1) - b, 'euclidean', axis=(2,3))
 
 		dist = _pairwise_euclidean_distance(embeddings, cluster_centers)
 		q = 1.0/(1.0+dist**2/self.alpha)**((self.alpha+1.0)/2.0)
