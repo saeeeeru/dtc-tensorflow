@@ -1,7 +1,7 @@
 bhtsne==0.1.9
 ConfigArgParse==0.13.0
 matplotlib==2.2.3
-numpy==1.14.5
+numpy==1.22.0
 scikit-learn==0.19.2
 scipy==1.1.0
 sklearn==0.0
