@@ -1,136 +1,137 @@
 import os, time
 
-import numpy
+import numpy as np
 import tensorflow as tf
 from sklearn.cluster import KMeans
-
-layers = tf.contrib.layers
-rnn = tf.contrib.rnn
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 def print_shape(name, tensor):
-	print('shape of {} is {}'.format(name,tensor.shape))
+	print('shape of {} is {}'.format(name, tensor.shape))
 
-class AutoEncoder(object):
-	"""docstring for AutoEncoder"""
+class AutoEncoder(tf.keras.Model):
+	"""AutoEncoder using Keras for TensorFlow 2.x compatibility"""
 	def __init__(self, args):
-		self.__dict__ = args.copy()
-		self.input_ = tf.placeholder(tf.float32, shape=[None, self.L, self.K])
-		self.input_batch_size = tf.placeholder(tf.int32, shape=[])
+		super(AutoEncoder, self).__init__()
+		self.__dict__.update(args)
 
-		self.layers = []
+		# Encoder layers
+		if self.K == 1:
+			self.conv1d = tf.keras.layers.Conv1D(
+				filters=self.n_filters_CNN,
+				kernel_size=self.kernel_size,
+				activation='relu',
+				padding='same'
+			)
+			self.max_pool = tf.keras.layers.MaxPooling1D(
+				pool_size=self.kernel_size,
+				strides=self.P
+			)
+		else:
+			self.conv2d_enc = tf.keras.layers.Conv2D(
+				filters=self.n_filters_CNN,
+				kernel_size=(self.kernel_size, self.K),
+				strides=(self.P, self.P),
+				padding='same'
+			)
 
-		with tf.name_scope('encoder'):
-			self.encoder = self._encoder_network()
+		# Bidirectional LSTM layers
+		self.bi_lstm_layers = []
+		for n_filters in self.n_filters_RNN_list:
+			self.bi_lstm_layers.append(
+				tf.keras.layers.Bidirectional(
+					tf.keras.layers.LSTM(n_filters, return_sequences=True)
+				)
+			)
 
-		with tf.name_scope('decoder'):
-			self.decoder = self._decoder_network()
+		# Decoder layers
+		if self.K == 1:
+			self.conv1d_dec = tf.keras.layers.Conv1D(
+				filters=self.K,
+				kernel_size=self.kernel_size,
+				activation=None,
+				padding='same'
+			)
+		else:
+			self.conv2d_dec = tf.keras.layers.Conv2DTranspose(
+				filters=1,
+				kernel_size=(self.kernel_size, self.K),
+				strides=(self.P, self.P),
+				padding='same'
+			)
 
-		with tf.name_scope('ae-train'):
-			self.loss = tf.losses.mean_squared_error(self.input_, self.decoder)
-			learning_rate = tf.train.exponential_decay(learning_rate=0.1, 
-												global_step=tf.train.get_or_create_global_step(),
-												decay_steps=20000,
-												decay_rate=0.1,
-												staircase=True)
-			self.optimizer = tf.train.MomentumOptimizer(learning_rate, 0.9).minimize(self.loss)
-
-
-	def _encoder_network(self):
-		print_shape('input', self.input_)
-		used = tf.sign(tf.reduce_max(tf.abs(self.input_), reduction_indices=2))
-		self.length = tf.cast(tf.reduce_sum(used, reduction_indices=1), tf.int32)
+	def encode(self, x):
+		"""Encoder network"""
+		print_shape('input', x)
 
 		if self.K == 1:
-			conv_out = layers.convolution1d(inputs=self.input_,
-										num_outputs=self.n_filters_CNN,
-										kernel_size=self.kernel_size,
-										activation_fn=tf.nn.leaky_relu)
+			conv_out = self.conv1d(x)
 			print_shape('conv out', conv_out)
-			max_pooled = tf.layers.max_pooling1d(inputs=conv_out,
-										pool_size=self.kernel_size,
-										strides=self.P)
+			max_pooled = self.max_pool(conv_out)
 			print_shape('max pooled', max_pooled)
 		else:
-			W_conv_enc = tf.get_variable('W_conv_enc', shape=[self.kernel_size, self.K, 1, self.n_filters_CNN])
-			conv_out = tf.nn.conv2d(input=tf.expand_dims(self.input_, axis=3),
-								filter=W_conv_enc,
-								strides=[1, self.P, self.P, 1],
-								padding='SAME')
+			x_expanded = tf.expand_dims(x, axis=3)
+			conv_out = self.conv2d_enc(x_expanded)
 			print_shape('conv out', conv_out)
-			max_pooled = tf.reshape(conv_out, shape=[self.input_batch_size,conv_out.shape[1],conv_out.shape[3]])
+			max_pooled = tf.reshape(conv_out, shape=[tf.shape(x)[0], conv_out.shape[1], conv_out.shape[3]])
 			print_shape('max pooled', max_pooled)
 
-		cell_fw_list = [rnn.LSTMCell(n_filters_RNN) for n_filters_RNN in self.n_filters_RNN_list]
-		cell_bw_list = [rnn.LSTMCell(n_filters_RNN) for n_filters_RNN in self.n_filters_RNN_list]
+		encoder_out = max_pooled
+		for bi_lstm in self.bi_lstm_layers:
+			encoder_out = bi_lstm(encoder_out)
+		print_shape('encoder', encoder_out)
 
-		encoder, encoder_state_fw, encoder_state_bw = rnn.stack_bidirectional_dynamic_rnn(
-														cells_fw=cell_fw_list, cells_bw=cell_bw_list, inputs=max_pooled, 
-														# sequence_length=self.length,
-														dtype=tf.float32, time_major=False, scope=None)
-		print_shape('encoder', encoder)
+		return encoder_out
 
-		return encoder
-
-	def _decoder_network(self):
+	def decode(self, encoded, input_batch_size):
+		"""Decoder network"""
 		if self.K == 1:
-			encoder_tmp = tf.expand_dims(self.encoder, axis=3)
-			
-			upsampled_tmp = tf.image.resize_images(encoder_tmp, 
-							size=[self.L + self.kernel_size - 1,1])
-							# method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-			upsampled = tf.reshape(upsampled_tmp, shape=[-1,upsampled_tmp.shape[1],upsampled_tmp.shape[2]])
+			encoder_tmp = tf.expand_dims(encoded, axis=3)
+			upsampled_tmp = tf.image.resize(encoder_tmp,
+							size=[self.L + self.kernel_size - 1, 1])
+			upsampled = tf.reshape(upsampled_tmp, shape=[-1, upsampled_tmp.shape[1], upsampled_tmp.shape[2]])
 			print_shape('upsampled', upsampled)
-
-			decoder = layers.convolution1d(inputs=upsampled,
-										num_outputs=self.K,
-										kernel_size=self.kernel_size,
-										activation_fn=None)
+			decoder = self.conv1d_dec(upsampled)
 		else:
-			encoder_tmp = tf.expand_dims(self.encoder, axis=2)
+			encoder_tmp = tf.expand_dims(encoded, axis=2)
 			print_shape('encoder tmp', encoder_tmp)
-			W_conv_dec = tf.get_variable('W_conv_dec', shape=[self.kernel_size, self.K, 1, encoder_tmp.shape[3]])
-			decoder_tmp = tf.nn.conv2d_transpose(value=encoder_tmp,
-							filter=W_conv_dec,
-							output_shape=[self.input_batch_size, self.L, self.K, 1],
-							strides=[1, self.P, self.P, 1],
-							padding='SAME')
-			decoder = tf.reshape(decoder_tmp, shape=[self.input_batch_size, self.L, self.K])
+			decoder_tmp = self.conv2d_dec(encoder_tmp)
+			# Resize to match original dimensions
+			decoder_tmp = tf.image.resize(decoder_tmp, size=[self.L, self.K])
+			decoder = tf.reshape(decoder_tmp, shape=[input_batch_size, self.L, self.K])
 
 		print_shape('decoder', decoder)
-
 		return decoder
 
+	def call(self, x, input_batch_size):
+		"""Forward pass"""
+		encoded = self.encode(x)
+		decoded = self.decode(encoded, input_batch_size)
+		return encoded, decoded
+
+
 class DeepTemporalClustering(object):
-	"""docstring for DeepTemporalClustering"""
+	"""Deep Temporal Clustering model for TensorFlow 2.x"""
 	def __init__(self, params):
 		self.__dict__ = params.copy()
 
 		self.kmeans = KMeans(n_clusters=self.n_clusters, n_init=20)
 		self.auto_encoder = AutoEncoder(self.__dict__)
 
-		self.z = self.auto_encoder.encoder
-		self.y = self.auto_encoder.decoder
+		# Initialize mu as a trainable variable
+		self.mu = None  # Will be initialized after first forward pass
 
-		z_shape = self.z.shape
-		self.mu = tf.Variable(tf.zeros(shape=[self.n_clusters,z_shape[1],z_shape[2]]), name='mu')
-		# self.mu = tf.Variable(tf.zeros(shape=[self.n_clusters,z_shape[1]]), name='mu')
+	def initialize_mu(self, z_shape):
+		"""Initialize cluster centers"""
+		if self.mu is None:
+			self.mu = tf.Variable(
+				tf.zeros(shape=[self.n_clusters, z_shape[1], z_shape[2]]),
+				name='mu',
+				trainable=True
+			)
 
-		with tf.name_scope('distribution'):
-			self.q = self._soft_assignment(self.z, self.mu)
-			self.p = tf.placeholder(tf.float32, shape=(None, self.n_clusters))
-
-			self.pred = tf.argmax(self.q, axis=1)
-
-		with tf.name_scope('dtc-train'):
-			# self.loss = self._kl_divergence(self.p, self.q)
-			self.loss_kl = self._kl_divergence(self.p, self.q) 
-			self.loss = self.loss_kl + 0.01 * self.auto_encoder.loss
-			self.optimizer = tf.train.AdamOptimizer(0.001).minimize(self.loss)
-
-	def _soft_assignment(self, embeddings, cluster_centers):
-		"""Implemented a soft assignment as the  probability of assigning sample i to cluster j.
+	def soft_assignment(self, embeddings, cluster_centers):
+		"""Implemented a soft assignment as the probability of assigning sample i to cluster j.
 
 		Args:
 			- embeddings: (N, L_tmp, dim)
@@ -140,25 +141,62 @@ class DeepTemporalClustering(object):
 			- q_ij: (N, n_clusters)
 		"""
 		def _pairwise_euclidean_distance(a, b):
-			return tf.norm(tf.expand_dims(a, axis=1) - b, 'euclidean', axis=(2,3))
+			return tf.norm(tf.expand_dims(a, axis=1) - b, 'euclidean', axis=(2, 3))
 
 		dist = _pairwise_euclidean_distance(embeddings, cluster_centers)
-		q = 1.0/(1.0+dist**2/self.alpha)**((self.alpha+1.0)/2.0)
-		q = (q/tf.reduce_sum(q, axis=1, keepdims=True))
-		
+		q = 1.0 / (1.0 + dist**2 / self.alpha)**((self.alpha + 1.0) / 2.0)
+		q = (q / tf.reduce_sum(q, axis=1, keepdims=True))
+
 		return q
 
 	def target_distribution(self, q):
+		"""Calculate target distribution"""
 		p = q**2 / q.sum(axis=0)
 		p = p / p.sum(axis=1, keepdims=True)
 		return p
 
-	def _kl_divergence(self, target, pred):
-		return tf.reduce_mean(tf.reduce_sum(target*tf.log(target/(pred)), axis=1))
+	def kl_divergence(self, target, pred):
+		"""Calculate KL divergence loss"""
+		return tf.reduce_mean(tf.reduce_sum(target * tf.math.log(target / (pred)), axis=1))
 
 	def get_assign_cluster_centers_op(self, features):
-		# init mu
+		"""Initialize cluster centers using KMeans"""
 		print('Start training KMeans')
-		kmeans = self.kmeans.fit(features.reshape(len(features),-1))
+		kmeans = self.kmeans.fit(features.reshape(len(features), -1))
 		print('Finish training KMeans')
-		return tf.assign(self.mu, kmeans.cluster_centers_.reshape(self.n_clusters,features.shape[1],features.shape[2]))
+		return kmeans.cluster_centers_.reshape(self.n_clusters, features.shape[1], features.shape[2])
+
+	@tf.function
+	def ae_train_step(self, x, input_batch_size, optimizer):
+		"""Single training step for autoencoder"""
+		with tf.GradientTape() as tape:
+			encoded, decoded = self.auto_encoder(x, input_batch_size)
+			loss = tf.reduce_mean(tf.square(x - decoded))
+
+		gradients = tape.gradient(loss, self.auto_encoder.trainable_variables)
+		optimizer.apply_gradients(zip(gradients, self.auto_encoder.trainable_variables))
+		return loss, encoded, decoded
+
+	@tf.function
+	def dtc_train_step(self, x, p, input_batch_size, optimizer):
+		"""Single training step for DTC"""
+		with tf.GradientTape() as tape:
+			encoded, decoded = self.auto_encoder(x, input_batch_size)
+			q = self.soft_assignment(encoded, self.mu)
+			loss_kl = self.kl_divergence(p, q)
+			loss_ae = tf.reduce_mean(tf.square(x - decoded))
+			loss = loss_kl + 0.01 * loss_ae
+
+		trainable_vars = self.auto_encoder.trainable_variables + [self.mu]
+		gradients = tape.gradient(loss, trainable_vars)
+		optimizer.apply_gradients(zip(gradients, trainable_vars))
+		return loss, loss_kl, loss_ae, encoded, decoded, q
+
+	def forward(self, x, input_batch_size):
+		"""Forward pass without gradient computation"""
+		encoded, decoded = self.auto_encoder(x, input_batch_size)
+		if self.mu is not None:
+			q = self.soft_assignment(encoded, self.mu)
+			pred = tf.argmax(q, axis=1)
+			return encoded, decoded, q, pred
+		return encoded, decoded, None, None

@@ -33,80 +33,116 @@ def train(args, \
 		'alpha': 1.0
 		})
 
-	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=None)
 	log_interval = int(finetune_iteration/100)
 
 	# Phase 1: parameter(Auto-Encoder) finetuning
 	if pretrained_ae_ckpt_path == None:
-		ae_ckpt_path = os.path.join('ae_ckpt','model.ckpt')
+		ae_ckpt_path = os.path.join('ae_ckpt', 'model')
 
 		print('Parameter(AE) finetuning')
-		with tf.Session() as sess:
-			sess.run(tf.global_variables_initializer())
 
-			for _iter, (batch_seq, batch_label, _) in enumerate(data.gen_next_batch(batch_size=batch_size,iteration=finetune_iteration)):
-				_, loss = sess.run([model.auto_encoder.optimizer, model.auto_encoder.loss], \
-								feed_dict={model.auto_encoder.input_: batch_seq, model.auto_encoder.input_batch_size: batch_size})
+		# Create optimizer with learning rate schedule
+		lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+			initial_learning_rate=0.1,
+			decay_steps=20000,
+			decay_rate=0.1,
+			staircase=True
+		)
+		ae_optimizer = tf.keras.optimizers.SGD(learning_rate=lr_schedule, momentum=0.9)
 
-				if _iter % log_interval == 0:
-					print('[AE-finetune] iter: {}\tloss: {}'.format(_iter, loss))
+		# Build model with sample input
+		sample_input = tf.constant(data.train_seq[:batch_size], dtype=tf.float32)
+		_ = model.auto_encoder(sample_input, batch_size)
 
-			saver.save(sess, ae_ckpt_path)
+		for _iter, (batch_seq, batch_label, _) in enumerate(data.gen_next_batch(batch_size=batch_size, iteration=finetune_iteration)):
+			batch_seq = tf.constant(batch_seq, dtype=tf.float32)
+			loss, _, _ = model.ae_train_step(batch_seq, batch_size, ae_optimizer)
+
+			if _iter % log_interval == 0:
+				print('[AE-finetune] iter: {}\tloss: {}'.format(_iter, loss.numpy()))
+
+		# Save model weights
+		os.makedirs(os.path.dirname(ae_ckpt_path), exist_ok=True)
+		model.auto_encoder.save_weights(ae_ckpt_path)
 
 	else:
 		ae_ckpt_path = pretrained_ae_ckpt_path
+		# Build model with sample input before loading weights
+		sample_input = tf.constant(data.train_seq[:batch_size], dtype=tf.float32)
+		_ = model.auto_encoder(sample_input, batch_size)
+		model.auto_encoder.load_weights(ae_ckpt_path)
 
 	# Phase 2: parameter optimization
-	dec_ckpt_path = os.path.join('dtc_ckpt','model.ckpt')
+	dtc_ckpt_path = os.path.join('dtc_ckpt', 'model')
 	print('Parameter(DTC) optimization')
-	saver = tf.train.Saver(var_list=tf.trainable_variables())
-	with tf.Session() as sess:
-		sess.run(tf.global_variables_initializer())
-		saver.restore(sess, ae_ckpt_path)
 
-		# init mu
-		z = sess.run(model.z, feed_dict={model.auto_encoder.input_: data.train_seq, model.auto_encoder.input_batch_size: len(data.train_seq)})
-		assign_mu_op = model.get_assign_cluster_centers_op(z)
-		
-		_ = sess.run(assign_mu_op)
+	# Load autoencoder weights if not already loaded
+	if pretrained_ae_ckpt_path == None:
+		# Weights already saved, reload them
+		model.auto_encoder.load_weights(ae_ckpt_path)
 
-		log_interval = int(optimization_iteration/10)
-		for cur_epoch in range(optimization_iteration):
-			q = sess.run(model.q, feed_dict={model.auto_encoder.input_: data.train_seq, model.auto_encoder.input_batch_size: len(data.train_seq)})
-			p = model.target_distribution(q)
+	# Initialize mu
+	train_seq_tensor = tf.constant(data.train_seq, dtype=tf.float32)
+	z, _ = model.auto_encoder(train_seq_tensor, len(data.train_seq))
+	z = z.numpy()
 
-			# per one epoch
-			loss_train_list, loss_kl_train_list, loss_seq_train_list = [], [], []
-			for _iter, (batch_seq, batch_label, batch_idxs) in enumerate(data.gen_next_batch(batch_size=batch_size, epoch=1)):
-				batch_p = p[batch_idxs]
-				_, loss, loss_kl, loss_seq, pred, decoder = sess.run([model.optimizer, model.loss, model.loss_kl, model.auto_encoder.loss, model.pred, model.y], \
-																	feed_dict={model.auto_encoder.input_: batch_seq, \
-																			model.auto_encoder.input_batch_size: len(batch_seq), \
-																			model.p: batch_p})
-				loss_train_list.append(loss); loss_kl_train_list.append(loss_kl); loss_seq_train_list.append(loss_seq)
+	model.initialize_mu(z.shape)
+	cluster_centers = model.get_assign_cluster_centers_op(z)
+	model.mu.assign(cluster_centers)
 
-			# validation
-			if cur_epoch % 10 == 0:
-				q = sess.run(model.q, feed_dict={model.auto_encoder.input_: data.test_seq, model.auto_encoder.input_batch_size: len(data.test_seq)})
-				p = model.target_distribution(q)
+	# DTC optimizer
+	dtc_optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
-				loss_val, loss_kl_val, loss_seq_val = sess.run([model.loss, model.loss_kl, model.auto_encoder.loss], \
-															feed_dict={model.auto_encoder.input_: data.test_seq, \
-																	model.auto_encoder.input_batch_size: len(data.test_seq), \
-																	model.p: p})
+	log_interval = int(optimization_iteration/10)
+	for cur_epoch in range(optimization_iteration):
+		# Calculate q and p
+		train_seq_tensor = tf.constant(data.train_seq, dtype=tf.float32)
+		z, _ = model.auto_encoder(train_seq_tensor, len(data.train_seq))
+		q = model.soft_assignment(z, model.mu).numpy()
+		p = model.target_distribution(q)
 
-				print_result(cur_epoch, optimization_iteration, \
-					# np.mean(loss_train_list), np.mean(loss_seq_train_list), np.mean(loss_kl_train_list), \
-					loss, loss_seq, loss_kl,\
-					loss_val, loss_seq_val, loss_kl_val)
+		# per one epoch
+		loss_train_list, loss_kl_train_list, loss_seq_train_list = [], [], []
+		for _iter, (batch_seq, batch_label, batch_idxs) in enumerate(data.gen_next_batch(batch_size=batch_size, epoch=1)):
+			batch_p = tf.constant(p[batch_idxs], dtype=tf.float32)
+			batch_seq = tf.constant(batch_seq, dtype=tf.float32)
 
-		saver.save(sess, dec_ckpt_path)
+			loss, loss_kl, loss_seq, encoded, decoded, pred_q = model.dtc_train_step(
+				batch_seq, batch_p, len(batch_seq), dtc_optimizer
+			)
+
+			loss_train_list.append(loss.numpy())
+			loss_kl_train_list.append(loss_kl.numpy())
+			loss_seq_train_list.append(loss_seq.numpy())
+
+		# validation
+		if cur_epoch % 10 == 0:
+			test_seq_tensor = tf.constant(data.test_seq, dtype=tf.float32)
+			z_val, decoded_val = model.auto_encoder(test_seq_tensor, len(data.test_seq))
+			q_val = model.soft_assignment(z_val, model.mu).numpy()
+			p_val = model.target_distribution(q_val)
+
+			loss_kl_val = model.kl_divergence(
+				tf.constant(p_val, dtype=tf.float32),
+				tf.constant(q_val, dtype=tf.float32)
+			).numpy()
+			loss_seq_val = tf.reduce_mean(tf.square(test_seq_tensor - decoded_val)).numpy()
+			loss_val = loss_kl_val + 0.01 * loss_seq_val
+
+			print_result(cur_epoch, optimization_iteration,
+				loss_train_list[-1], loss_seq_train_list[-1], loss_kl_train_list[-1],
+				loss_val, loss_seq_val, loss_kl_val)
+
+	# Save DTC model
+	os.makedirs(os.path.dirname(dtc_ckpt_path), exist_ok=True)
+	model.auto_encoder.save_weights(dtc_ckpt_path)
+	# Save mu separately
+	np.save(os.path.join('dtc_ckpt', 'mu.npy'), model.mu.numpy())
 
 def main():
 	args = generate_args()
 
 	train(args)
-	# train(args, ps.path.join('ae_ckpt','model.ckpt'))
 
 if __name__ == '__main__':
 	main()
