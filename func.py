@@ -27,7 +27,7 @@ class BHTSNE(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
 
 	def fit_and_plot(self, X, label_list, cluster_list):
 		data_tsne = bhtsne.tsne(
-			X.astype(scipy.float64),
+			X.astype(np.float64),
 			dimensions=self.dimensions,
 			perplexity=self.perplexity,
 			theta=self.theta,

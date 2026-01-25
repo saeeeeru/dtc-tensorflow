@@ -15,7 +15,7 @@ def prepare_dataset(K):
 	t = np.arange(0, L*dt, dt)[:L]
 	seq_list, label_list = [], []
 	for i in range(n_clusters):
-		n_sinusoids = np.random.random_integers(1,4)
+		n_sinusoids = np.random.randint(1, 5)  # randint is [low, high)
 		sample_parameters = [[np.random.normal(loc=1, scale=2, size=K), np.random.normal(loc=10, scale=5, size=K)] for _ in range(n_sinusoids)]
 		for j in range(N):
 			seq = np.vstack([np.sum([coef[k]*np.sin(2*np.pi*freq[k]*t) for coef, freq in sample_parameters], axis=0) + np.random.randn(L) for k in range(K)]).reshape(L,K)
